@@ -2,18 +2,16 @@
   'use strict';
 
   const PLAYERS = [
-    { name: 'Christo', color: '#8bac0f', email: 'christo.rtc@example.com' },
-    { name: 'Jasmine', color: '#ffd84a', email: 'jasmine.rtc@example.com' },
-    { name: 'Alphie', color: '#6ec6ff', email: 'alphie.rtc@example.com' },
-    { name: 'Soumya', color: '#ff8fa3', email: 'soumya.rtc@example.com' },
-    { name: 'Jaison', color: '#c79bff', email: 'jaison.rtc@example.com' }
+    { name: 'Christo', color: '#8bac0f' },
+    { name: 'Jasmine', color: '#ffd84a' },
+    { name: 'Alphie', color: '#6ec6ff' },
+    { name: 'Soumya', color: '#ff8fa3' },
+    { name: 'Jaison', color: '#c79bff' }
   ];
   const { START, LAST, GOAL, CAP, addDays, todayIST, score } = window.RTCScoring;
   const app = document.getElementById('app');
   const toastRoot = document.getElementById('toast-root');
   let db = null;
-  let authUser = null;
-  let profile = null;
   let S = { logs: {} };
   let editing = null;
   let soundOn = true;
@@ -26,7 +24,6 @@
   const esc = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const fmt = n => Number(n || 0).toLocaleString('en-IN');
   const playerMeta = name => PLAYERS.find(p => p.name === name) || { name, color: '#cadc9f' };
-  const isAdmin = () => !!(profile && profile.is_admin);
   const appConfigured = () => {
     const c = window.RTC_CONFIG || {};
     return !!(c.SUPABASE_URL && c.SUPABASE_PUBLISHABLE_KEY &&
@@ -34,6 +31,11 @@
   };
   const endTime = () => Date.parse('2026-12-25T00:00:00+05:30');
   const challengeOver = () => Date.now() >= endTime();
+  const canPublicLog = () => {
+    const t = todayIST();
+    return t >= START && t <= LAST;
+  };
+  const canManageDate = (_name, day) => canPublicLog() && day >= START && day <= LAST && day <= todayIST();
 
   function toast(message, isError) {
     const el = document.createElement('div');
@@ -61,27 +63,6 @@
     } catch (_) { /* audio is an optional enhancement */ }
   }
 
-  function clampDateForForm() {
-    const t = todayIST();
-    if (t < START) return START;
-    if (t > LAST) return LAST;
-    return t;
-  }
-  function nonAdminMinDate() {
-    const earliest = addDays(todayIST(), -7);
-    return earliest < START ? START : earliest;
-  }
-  function canManageDate(name, day) {
-    if (!profile) return false;
-    if (isAdmin()) return day >= START && day <= LAST;
-    const t = todayIST();
-    return name === profile.player_name && t <= LAST && day >= nonAdminMinDate() && day <= t && day >= START && day <= LAST;
-  }
-  function canNonAdminLog() {
-    const t = todayIST();
-    return t >= START && t <= LAST;
-  }
-
   function makeLogsObject(rows) {
     const next = { logs: {} };
     for (const row of rows || []) {
@@ -92,7 +73,7 @@
   }
 
   async function fetchLogs(silent) {
-    if (!db || !profile) return;
+    if (!db) return;
     const { data, error } = await db.from('logs').select('player_name,day,steps').order('day', { ascending: false });
     if (error) {
       if (!silent) toast('Could not load logs. Check your connection.', true);
@@ -115,72 +96,8 @@
       .sort((a, b) => b.pts - a.pts || b.steps - a.steps);
   }
 
-  async function startSession(user) {
-    authUser = user;
-    const { data, error } = await db.from('profiles').select('player_name,is_admin').eq('id', user.id).single();
-    if (error || !data) {
-      console.error('Profile missing:', error && error.message);
-      await db.auth.signOut();
-      renderLogin('This account is not linked to a player. Ask Jaison to check the setup SQL.');
-      return;
-    }
-    profile = data;
-    editing = null;
-    lastLeader = null;
-    await fetchLogs(true);
-    renderDashboard();
-    if (refreshTimer) window.clearInterval(refreshTimer);
-    refreshTimer = window.setInterval(() => {
-      if (document.visibilityState === 'visible' && !document.querySelector('input:focus, select:focus')) fetchLogs(true);
-    }, 12000);
-    toast('PLAYER 1 READY · ' + profile.player_name);
-  }
-
   function renderLogin(message) {
-    profile = null; authUser = null; editing = null;
-    if (refreshTimer) { window.clearInterval(refreshTimer); refreshTimer = null; }
-    if (!appConfigured()) {
-      app.innerHTML = `<div class="login-wrap"><div class="login-logo">🎮</div><h1>Road to Christmas</h1><div class="sub">Cartridge setup needed</div><div class="box"><h2>Almost ready</h2><p>The app files are in place, but the Supabase connection has not been filled in yet.</p><p>Open <strong>config.js</strong> in the project files and paste the Project URL and Publishable Key from Supabase. Do not use a secret or service-role key.</p></div></div>`;
-      return;
-    }
-    app.innerHTML = `<div class="login-wrap">
-      <div class="login-logo">🎮</div><h1>Road to Christmas</h1><div class="sub">FAMILY STEP CHALLENGE · 10K A DAY</div>
-      <div class="box"><h2>▶ Insert player PIN</h2>
-        <form id="login-form" autocomplete="on">
-          <label class="label" for="login-player">Player</label>
-          <select id="login-player" name="username" autocomplete="username">${PLAYERS.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('')}</select>
-          <label class="label" for="login-pin">6-digit PIN</label>
-          <input id="login-pin" name="password" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" autocomplete="current-password" placeholder="••••••" required>
-          <button id="login-button" type="submit">Press Start</button>
-        </form>
-        <div id="login-error" class="login-error" role="alert">${message ? esc(message) : ''}</div>
-      </div>
-      <p class="note center">Only the five family accounts can sign in. Ask Jaison if you need your PIN reset.</p>
-    </div>`;
-    document.getElementById('login-form').addEventListener('submit', handleLogin);
-  }
-
-  async function handleLogin(event) {
-    event.preventDefault();
-    if (busy) return;
-    const name = document.getElementById('login-player').value;
-    const pin = document.getElementById('login-pin').value;
-    if (!/^\d{6}$/.test(pin)) {
-      document.getElementById('login-error').textContent = 'Enter your 6-digit PIN.';
-      return;
-    }
-    busy = true;
-    const button = document.getElementById('login-button');
-    button.disabled = true; button.textContent = 'Checking PIN…';
-    const person = PLAYERS.find(p => p.name === name);
-    const { data, error } = await db.auth.signInWithPassword({ email: person.email, password: pin });
-    busy = false;
-    if (error || !data.user) {
-      document.getElementById('login-error').textContent = 'PIN not recognised. Check the selected name and try again.';
-      button.disabled = false; button.textContent = 'Press Start';
-      return;
-    }
-    await startSession(data.user);
+    app.innerHTML = `<div class="login-wrap"><div class="login-logo">🎮</div><h1>Road to Christmas</h1><div class="sub">PUBLIC FAMILY STEP CHALLENGE</div><div class="box"><h2>▶ Database connection needed</h2><p>The app files are ready, but the Supabase connection has not been configured.</p><p>Open <strong>config.js</strong> and paste your Supabase Project URL and Publishable Key. Use the publishable key only, never a secret/service-role key.</p><p>Then run the updated <strong>supabase-setup.sql</strong> script in Supabase SQL Editor to enable public access.</p>${message ? `<p class="login-error">${esc(message)}</p>` : ''}</div></div>`;
   }
 
   function countdownHtml() {
@@ -215,11 +132,8 @@
     all.sort((a, b) => b.day.localeCompare(a.day) || a.name.localeCompare(b.name));
     if (!all.length) return '<div class="muted">No steps logged yet. Be the first!</div>';
     return all.slice(0, 40).map(row => {
-      const manageable = canManageDate(row.name, row.day);
-      const own = row.name === profile.player_name;
-      const canEdit = isAdmin() || (own && manageable);
-      const canDelete = canEdit;
-      const actions = `${canEdit ? `<button class="mini secondary" data-action="edit" data-name="${esc(row.name)}" data-day="${row.day}">Edit</button>` : ''}${canDelete ? `<button class="mini danger" data-action="delete" data-name="${esc(row.name)}" data-day="${row.day}">✕</button>` : ''}`;
+      const editable = canManageDate(row.name, row.day);
+      const actions = editable ? `<button class="mini secondary" data-action="edit" data-name="${esc(row.name)}" data-day="${row.day}">Edit</button><button class="mini danger" data-action="delete" data-name="${esc(row.name)}" data-day="${row.day}">✕</button>` : '';
       return `<div class="log-item"><div class="log-info"><span style="color:${playerMeta(row.name).color}">${esc(row.name)}</span><br>${row.day} · ${fmt(row.steps)} steps ${row.steps >= GOAL ? '<span class="goal-mark">★</span>' : ''}</div><div class="log-actions">${actions || '<span class="status">Locked</span>'}</div></div>`;
     }).join('');
   }
@@ -238,21 +152,18 @@
 
   function logFormHtml() {
     const t = todayIST();
-    const mayLog = isAdmin() || canNonAdminLog();
-    if (!mayLog) {
-      return `<div class="box center"><h2>🔒 Logging closed</h2><p>${t < START ? 'The challenge opens on Oct 29, 2026.' : 'Player logging closed at midnight on Dec 25 IST. The final board is here!'}</p>${isAdmin() ? '' : '<p class="note">Jaison can still correct entries if needed.</p>'}</div>`;
+    if (!canPublicLog()) {
+      return `<div class="box center"><h2>🔒 Logging closed</h2><p>${t < START ? 'The challenge opens on Oct 29, 2026.' : 'Player logging closed at midnight on Dec 25 IST. The final board is here!'}</p></div>`;
     }
-    const admin = isAdmin();
-    const minDay = admin ? START : nonAdminMinDate();
-    const maxDay = admin ? LAST : (t < LAST ? t : LAST);
-    const dateVal = editing ? editing.day : clampDateForForm();
+    const maxDay = t < LAST ? t : LAST;
+    const dateVal = editing ? editing.day : t;
     const stepsVal = editing ? editing.steps : '';
-    const personVal = editing ? editing.name : profile.player_name;
-    const playerSelect = admin ? `<label class="label" for="log-player">Player</label><select id="log-player">${PLAYERS.map(p => `<option value="${esc(p.name)}" ${personVal === p.name ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : `<div class="player-tag">Player: ${esc(profile.player_name)}</div>`;
-    const rangeNote = admin ? 'Admin mode: you can correct any date in the challenge.' : 'You can log or correct your own entries for today or the previous 7 days.';
+    const personVal = editing ? editing.name : PLAYERS[0].name;
+    const playerSelect = `<label class="label" for="log-player">Player</label><select id="log-player">${PLAYERS.map(p => `<option value="${esc(p.name)}" ${personVal === p.name ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`;
+    const rangeNote = 'Open mode: anyone with the link can add, edit or delete any player’s entries. Please double-check the player and date. Future dates are not allowed.';
     return `<div class="box" id="log-box"><h2>▶ ${editing ? 'Edit steps' : 'Log steps'}</h2><form id="log-form">
       ${playerSelect}
-      <label class="label" for="log-day">Challenge day</label><input id="log-day" type="date" min="${minDay}" max="${maxDay}" value="${dateVal}" required>
+      <label class="label" for="log-day">Challenge day</label><input id="log-day" type="date" min="${START}" max="${maxDay}" value="${dateVal}" required>
       <label class="label" for="log-steps">Total steps</label><input id="log-steps" type="number" inputmode="numeric" min="0" max="100000" step="1" placeholder="e.g. 10482" value="${stepsVal}" required>
       <button id="save-log" type="submit">${editing ? 'Save changes' : 'Press start'}</button>
       ${editing ? '<button id="cancel-edit" class="secondary" type="button">Cancel edit</button>' : ''}
@@ -266,10 +177,9 @@
   }
 
   function renderDashboard() {
-    if (!profile) return renderLogin();
     const leaderboard = getLeaderboard(S);
     const formHtml = logFormHtml();
-    const configButtons = `<div class="top-actions"><span class="player-tag">▶ ${esc(profile.player_name)}${isAdmin() ? ' · ADMIN' : ''}</span><div style="display:flex;gap:7px"><button id="sound-toggle" class="mini secondary" type="button">${soundOn ? '🔊 Sound' : '🔇 Sound'}</button><button id="logout" class="mini secondary" type="button">Log out</button></div></div>`;
+    const configButtons = `<div class="top-actions"><span class="player-tag">▶ PUBLIC ARCADE · OPEN EDITING</span><button id="sound-toggle" class="mini secondary" type="button">${soundOn ? '🔊 Sound' : '🔇 Sound'}</button></div>`;
     app.innerHTML = `${configButtons}<h1>Road to Christmas</h1><div class="sub">Family step challenge · 10k a day</div>
       ${countdownHtml()}${trackHtml(leaderboard)}${santaMessage(leaderboard)}${leaderboardHtml(leaderboard)}
       ${formHtml}
@@ -280,9 +190,6 @@
       <div class="footer">GAME ON · OCT 29 — DEC 24, 2026 · IST</div>`;
 
     document.getElementById('sound-toggle').addEventListener('click', () => { soundOn = !soundOn; try { localStorage.setItem('rtc-sound', soundOn ? 'on' : 'off'); } catch (_) {} renderDashboard(); beep(false); });
-    document.getElementById('logout').addEventListener('click', async () => {
-      await db.auth.signOut(); profile = null; authUser = null; S = { logs: {} }; renderLogin(); toast('Logged out');
-    });
     const form = document.getElementById('log-form');
     if (form) form.addEventListener('submit', handleLogSubmit);
     const cancel = document.getElementById('cancel-edit');
@@ -326,12 +233,13 @@
     const day = document.getElementById('log-day').value;
     const rawSteps = document.getElementById('log-steps').value;
     const steps = Number(rawSteps);
-    const name = isAdmin() ? document.getElementById('log-player').value : profile.player_name;
+    const name = document.getElementById('log-player').value;
     if (!day || !Number.isInteger(steps) || steps < 0 || steps > 100000) {
       toast('Enter a whole number between 0 and 100,000.', true); return;
     }
     if (day < START || day > LAST) { toast('Choose a day inside the challenge window.', true); return; }
-    if (!isAdmin() && !canManageDate(name, day)) { toast('You can only edit your own entries for today or the last 7 days.', true); return; }
+    if (day > todayIST()) { toast('Future dates cannot be logged.', true); return; }
+    if (!canPublicLog()) { toast('The challenge is closed for logging.', true); return; }
     busy = true;
     const saveButton = document.getElementById('save-log');
     saveButton.disabled = true; saveButton.textContent = 'Saving…';
@@ -359,29 +267,24 @@
     }
     window.addEventListener('beforeinstallprompt', event => {
       event.preventDefault(); deferredInstallPrompt = event;
-      if (profile) renderDashboard();
+      renderDashboard();
     });
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && profile && !document.querySelector('input:focus,select:focus')) fetchLogs(true);
+      if (document.visibilityState === 'visible' && !document.querySelector('input:focus,select:focus')) fetchLogs(true);
     });
     if (!appConfigured()) { renderLogin(); return; }
     if (!window.supabase || typeof window.supabase.createClient !== 'function') {
       app.innerHTML = '<div class="box error-panel">Could not load the Supabase browser library. Check the internet connection and reload.</div>'; return;
     }
     db = window.supabase.createClient(window.RTC_CONFIG.SUPABASE_URL, window.RTC_CONFIG.SUPABASE_PUBLISHABLE_KEY, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
     });
-    db.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT' && profile) {
-        profile = null; authUser = null; S = { logs: {} };
-        if (refreshTimer) { window.clearInterval(refreshTimer); refreshTimer = null; }
-        renderLogin();
-      }
-    });
-    const { data, error } = await db.auth.getSession();
-    if (error) console.error('Session restore failed:', error.message);
-    if (data && data.session) await startSession(data.session.user);
-    else renderLogin();
+    renderDashboard();
+    await fetchLogs(false);
+    if (refreshTimer) window.clearInterval(refreshTimer);
+    refreshTimer = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && !document.querySelector('input:focus, select:focus')) fetchLogs(true);
+    }, 12000);
   }
 
   init();
