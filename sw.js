@@ -1,4 +1,4 @@
-const CACHE_NAME = 'road-to-christmas-shell-v2';
+const CACHE_NAME = 'road-to-christmas-shell-v3';
 const SHELL = [
   './', './index.html', './styles.css', './config.js', './scoring.js', './app.js',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'

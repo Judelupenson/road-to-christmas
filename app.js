@@ -15,6 +15,11 @@
   let S = { logs: {} };
   let editing = null;
   let soundOn = true;
+  let musicOn = false;
+  let audioContext = null;
+  let musicTimer = null;
+  let musicStep = 0;
+  let audioStartedByUser = false;
   let refreshTimer = null;
   let deferredInstallPrompt = null;
   let lastLeader = null;
@@ -46,21 +51,93 @@
     window.setTimeout(() => el.remove(), 2700);
   }
 
+  function getAudioContext() {
+    if (audioContext && audioContext.state !== 'closed') return audioContext;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return null;
+    audioContext = new AudioCtx();
+    return audioContext;
+  }
+
+  function tone(frequency, startAt, duration, volume, type = 'square') {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(frequency, startAt);
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, volume), startAt + 0.012);
+    gain.gain.setValueAtTime(Math.max(0.0002, volume), startAt + Math.max(0.02, duration - 0.025));
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(startAt); osc.stop(startAt + duration + 0.01);
+  }
+
+  // Original, looping 8-bit melody (not sampled from an existing game).
+  // Frequencies are kept in code so the music works offline and needs no audio files.
+  const melody = [659, 0, 784, 0, 988, 784, 659, 0, 587, 0, 659, 784, 880, 0, 784, 0,
+    659, 0, 523, 0, 587, 659, 784, 0, 698, 0, 659, 587, 523, 0, 587, 0];
+  const bassline = [131, 0, 196, 0, 165, 0, 247, 0, 110, 0, 165, 0, 147, 0, 220, 0,
+    131, 0, 196, 0, 104, 0, 156, 0, 117, 0, 175, 0, 131, 0, 196, 0];
+
+  function scheduleMusicStep() {
+    if (!musicOn || document.visibilityState === 'hidden') return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    const now = ctx.currentTime + 0.025;
+    const note = melody[musicStep];
+    const bass = bassline[musicStep];
+    if (note) tone(note, now, 0.105, 0.022, 'square');
+    if (bass && musicStep % 2 === 0) tone(bass, now, 0.16, 0.012, 'square');
+    musicStep = (musicStep + 1) % melody.length;
+    musicTimer = window.setTimeout(scheduleMusicStep, 145);
+  }
+
+  async function startMusicFromTap() {
+    const ctx = getAudioContext();
+    if (!ctx) { toast('This browser does not support audio.', true); return false; }
+    try { await ctx.resume(); } catch (_) { /* browser may decline audio */ }
+    audioStartedByUser = ctx.state === 'running';
+    if (!audioStartedByUser) { toast('Tap music again to allow audio.', true); return false; }
+    musicOn = true;
+    musicStep = 0;
+    if (musicTimer) window.clearTimeout(musicTimer);
+    scheduleMusicStep();
+    return true;
+  }
+
+  function stopMusic() {
+    musicOn = false;
+    if (musicTimer) window.clearTimeout(musicTimer);
+    musicTimer = null;
+  }
+
   function beep(win) {
     if (!soundOn) return;
-    try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
-      (win ? [523, 659, 784, 1047] : [440]).forEach((f, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'square'; osc.frequency.value = f; gain.gain.value = .045;
-        osc.connect(gain); gain.connect(ctx.destination);
-        osc.start(ctx.currentTime + i * .12); osc.stop(ctx.currentTime + i * .12 + .1);
-      });
-      window.setTimeout(() => ctx.close().catch(() => {}), 900);
-    } catch (_) { /* audio is an optional enhancement */ }
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    const now = ctx.currentTime + 0.015;
+    (win ? [523, 659, 784, 1047] : [440]).forEach((f, i) => {
+      tone(f, now + i * (win ? 0.12 : 0), win ? 0.095 : 0.075, win ? 0.035 : 0.018, 'square');
+    });
+  }
+
+  function sfx(kind) {
+    if (!soundOn) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    const now = ctx.currentTime + 0.01;
+    const patterns = {
+      save: [[784, 0, 0.07], [988, 0.075, 0.09]],
+      delete: [[392, 0, 0.09], [294, 0.08, 0.12]],
+      edit: [[587, 0, 0.06], [784, 0.065, 0.06]],
+      win: [[523, 0, 0.11], [659, 0.12, 0.11], [784, 0.24, 0.11], [1047, 0.36, 0.2]]
+    };
+    (patterns[kind] || patterns.save).forEach(([f, offset, duration]) => tone(f, now + offset, duration, 0.035, 'square'));
   }
 
   function makeLogsObject(rows) {
@@ -179,7 +256,7 @@
   function renderDashboard() {
     const leaderboard = getLeaderboard(S);
     const formHtml = logFormHtml();
-    const configButtons = `<div class="top-actions"><span class="player-tag">▶ PUBLIC ARCADE · OPEN EDITING</span><button id="sound-toggle" class="mini secondary" type="button">${soundOn ? '🔊 Sound' : '🔇 Sound'}</button></div>`;
+    const configButtons = `<div class="top-actions"><span class="player-tag">▶ PUBLIC ARCADE · OPEN EDITING</span><div class="audio-controls"><button id="music-toggle" class="mini secondary" type="button" aria-pressed="${musicOn}">${musicOn ? '🎵 Music ON' : '🎵 Music OFF'}</button><button id="sound-toggle" class="mini secondary" type="button" aria-pressed="${soundOn}">${soundOn ? '🔊 SFX ON' : '🔇 SFX OFF'}</button></div></div>`;
     app.innerHTML = `${configButtons}<h1>Road to Christmas</h1><div class="sub">Family step challenge · 10k a day</div>
       ${countdownHtml()}${trackHtml(leaderboard)}${santaMessage(leaderboard)}${leaderboardHtml(leaderboard)}
       ${formHtml}
@@ -189,7 +266,13 @@
       <div class="box box-tight center"><p class="note">Install on your phone: use your browser menu → <strong>Add to Home Screen</strong> or <strong>Install app</strong>.</p>${deferredInstallPrompt ? '<button id="install-app" type="button">Install app</button>' : ''}</div>
       <div class="footer">GAME ON · OCT 29 — DEC 24, 2026 · IST</div>`;
 
-    document.getElementById('sound-toggle').addEventListener('click', () => { soundOn = !soundOn; try { localStorage.setItem('rtc-sound', soundOn ? 'on' : 'off'); } catch (_) {} renderDashboard(); beep(false); });
+    document.getElementById('sound-toggle').addEventListener('click', () => { soundOn = !soundOn; try { localStorage.setItem('rtc-sound', soundOn ? 'on' : 'off'); } catch (_) {} renderDashboard(); if (soundOn) sfx('save'); });
+    document.getElementById('music-toggle').addEventListener('click', async () => {
+      if (musicOn) { stopMusic(); renderDashboard(); return; }
+      const started = await startMusicFromTap();
+      renderDashboard();
+      if (started) sfx('save');
+    });
     const form = document.getElementById('log-form');
     if (form) form.addEventListener('submit', handleLogSubmit);
     const cancel = document.getElementById('cancel-edit');
@@ -197,6 +280,7 @@
     document.querySelectorAll('[data-action="edit"]').forEach(button => button.addEventListener('click', () => {
       editing = { name: button.dataset.name, day: button.dataset.day, steps: Number((S.logs[button.dataset.name] || {})[button.dataset.day]) };
       renderDashboard();
+      sfx('edit');
       document.getElementById('log-box')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       document.getElementById('log-steps')?.focus({ preventScroll: true });
     }));
@@ -214,7 +298,7 @@
         busy = false;
         if (error) { toast('Could not delete entry. ' + error.message, true); return; }
         if (editing && key === editing.name + '|' + editing.day) editing = null;
-        await fetchLogs(true); renderDashboard(); toast('Entry deleted');
+        await fetchLogs(true); renderDashboard(); toast('Entry deleted'); sfx('delete');
       });
     });
     const install = document.getElementById('install-app');
@@ -255,7 +339,7 @@
     await fetchLogs(true);
     renderDashboard();
     toast(steps >= GOAL ? 'LEVEL UP! ' + name + ' HIT 10K' : 'Logged ' + fmt(steps) + ' steps for ' + name);
-    beep(steps >= GOAL);
+    if (steps >= GOAL) sfx('win'); else sfx('save');
   }
 
   async function init() {
@@ -270,7 +354,13 @@
       renderDashboard();
     });
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && !document.querySelector('input:focus,select:focus')) fetchLogs(true);
+      if (document.visibilityState === 'hidden') {
+        if (musicTimer) window.clearTimeout(musicTimer);
+        musicTimer = null;
+      } else {
+        if (musicOn && audioStartedByUser) scheduleMusicStep();
+        if (!document.querySelector('input:focus,select:focus')) fetchLogs(true);
+      }
     });
     if (!appConfigured()) { renderLogin(); return; }
     if (!window.supabase || typeof window.supabase.createClient !== 'function') {
