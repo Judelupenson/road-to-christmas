@@ -89,8 +89,8 @@
     const now = ctx.currentTime + 0.025;
     const note = melody[musicStep];
     const bass = bassline[musicStep];
-    if (note) tone(note, now, 0.12, 0.075, 'square');
-    if (bass && musicStep % 2 === 0) tone(bass, now, 0.18, 0.04, 'square');
+    if (note) tone(note, now, 0.13, 0.085, 'square');
+    if (bass && musicStep % 2 === 0) tone(bass, now, 0.19, 0.045, 'square');
     musicStep = (musicStep + 1) % melody.length;
     musicTimer = window.setTimeout(scheduleMusicStep, 145);
   }
@@ -104,7 +104,12 @@
     musicOn = true;
     musicStep = 0;
     if (musicTimer) window.clearTimeout(musicTimer);
-    scheduleMusicStep();
+    // Immediate confirmation note, then begin the looping melody.
+    const firstNoteAt = ctx.currentTime + 0.02;
+    tone(784, firstNoteAt, 0.18, 0.09, 'square');
+    window.setTimeout(() => {
+      if (musicOn) scheduleMusicStep();
+    }, 180);
     return true;
   }
 
@@ -121,7 +126,7 @@
     if (ctx.state === 'suspended') ctx.resume().catch(() => {});
     const now = ctx.currentTime + 0.015;
     (win ? [523, 659, 784, 1047] : [440]).forEach((f, i) => {
-      tone(f, now + i * (win ? 0.12 : 0), win ? 0.11 : 0.09, win ? 0.07 : 0.055, 'square');
+      tone(f, now + i * (win ? 0.12 : 0), win ? 0.12 : 0.09, win ? 0.075 : 0.06, 'square');
     });
   }
 
@@ -137,7 +142,7 @@
       edit: [[587, 0, 0.06], [784, 0.065, 0.06]],
       win: [[523, 0, 0.11], [659, 0.12, 0.11], [784, 0.24, 0.11], [1047, 0.36, 0.2]]
     };
-    (patterns[kind] || patterns.save).forEach(([f, offset, duration]) => tone(f, now + offset, duration, 0.065, 'square'));
+    (patterns[kind] || patterns.save).forEach(([f, offset, duration]) => tone(f, now + offset, duration, 0.07, 'square'));
   }
 
   function makeLogsObject(rows) {
